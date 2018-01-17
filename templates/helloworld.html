@@ -1,0 +1,50 @@
+<% from application import STATIC %>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Inflex api</title>
+    <style type="text/css">
+        body {
+            padding: 0;
+            margin: 0;
+        }
+
+        h1 {
+            color: white;
+            font-size: 4em;
+            text-shadow: 0 0 6px rgba(255,255,255,0.5);
+        }
+
+        #inner {
+            display: block;
+            height: 30px;
+            width: 100%;
+            top: 350px;
+            position: absolute;
+            text-align: center;
+            z-index: 666;
+        }
+
+        #title {
+            ## padding-left: 10px;
+        }
+
+        #main {
+            background: url("${STATIC}/psycho.jpg") repeat-x;
+            height: 900px;
+            background-size: 900px;
+            filter: blur(10px);
+            display: block;
+            z-index: -666;
+        }
+    </style>
+</head>
+<body>
+<div id="inner">
+    <h1 id="title">${text}</h1>
+</div>
+<div id="main">
+</div>
+</body>
+</html>
