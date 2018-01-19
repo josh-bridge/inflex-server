@@ -38,11 +38,21 @@
             display: block;
             z-index: -666;
         }
+
+        label {
+            color: #FFF;
+            text-shadow: 1px 1px 3px rgba(255, 255, 255, 1);
+        }
     </style>
 </head>
 <body>
 <div id="inner">
     <h1 id="title">${text}</h1>
+    <form action="/upload" method="POST" enctype="multipart/form-data">
+        <label for="user_file">Upload Your File</label>
+        <input type="file" name="user_file">
+        <button type="submit">Upload</button>
+    </form>
 </div>
 <div id="main">
 </div>

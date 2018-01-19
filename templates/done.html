@@ -1,0 +1,23 @@
+<% from application import STATIC %>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Inflex upload</title>
+</head>
+<body>
+<div id="inner">
+    <h1 id="title">done</h1>
+</div>
+<div id="main">
+    <a href="${url}">${url}</a>
+    <br/>
+    <img src="${url}"/>
+    <ul>
+        % for file in files:
+            <li>Item ${loop.index}: ${file}</li>
+        % endfor
+    </ul>
+</div>
+</body>
+</html>

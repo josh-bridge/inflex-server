@@ -103,3 +103,5 @@ ENV/
 
 .idea/
 .ebextensions/
+
+._*
