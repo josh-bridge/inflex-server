@@ -1,5 +1,12 @@
 Flask==0.12.2
 Mako==1.0.7
 Flask_Mako==0.4
+Flask-API==1.0
+Flask-Restful==0.3.6
 Boto3==1.5.18
 python-dotenv==0.7.1
+pymongo==3.3.0
+Pillow==5.0.0
+requests==2.18.4
+numpy==1.14.0
+opencv_python==3.4.0.12
