@@ -15,3 +15,7 @@ VISION_API = os.environ.get("VISION_API")
 SECRET_KEY = os.urandom(32)
 DEBUG = True
 PORT = 5000
+
+# BROKER_URL = "amqp://guest:guest@localhost:5672//"
+# CELERY_RESULT_BACKEND = "amqp"
+# CELERY_IMPORTS = ("tasks", )

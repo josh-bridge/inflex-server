@@ -1,6 +1,6 @@
 import boto3
 
-from app.config import S3_KEY, S3_SECRET
+from app.config.config import S3_KEY, S3_SECRET
 
 s3 = boto3.client(
    "s3",

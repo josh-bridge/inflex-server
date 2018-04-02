@@ -1,145 +1,26 @@
 import datetime
-import os
-import uuid
-from io import BytesIO
 
-import cv2 as cv
-import numpy
-import requests
-from PIL import Image, ImageEnhance
-from flask import Flask, request, jsonify, redirect
+from flask import Flask, request, jsonify, Response
 from flask_api import status
 from flask_mako import MakoTemplates, render_template
+from flask_cors import CORS
 
 from app import db
-from app.helpers import s3
+from app.analysis.dominant_colours import analyze
+from app.filters.base_filter import Filterable, BaseFilter
+from app.recommend.recommender import get_recommendation
+from app.tasks import tasks
+from app.web.util import create_uuid, validate_upload, upload_original, upload_object
+
+SIZES = ['full', 'preview', 'thumb']
 
 application = Flask(__name__)
+CORS(application)
 mako = MakoTemplates(application)
 
 STATIC = 'static'
 
-application.config.from_object("app.config")
-
-
-def allowed_file(file):
-    return file \
-           and file.filename.lower().endswith(".jpg") \
-           or file.filename.lower().endswith(".png")
-
-
-def upload_fileobj_to_s3(file_bytes, filename, content_type, bucket_name, folder="upload", acl="public-read"):
-    upload_path = os.path.join(folder, filename)
-    try:
-        s3.upload_fileobj(
-            file_bytes,
-            bucket_name,
-            upload_path,
-            ExtraArgs={
-                "ACL": acl,
-                "ContentType": content_type
-            }
-        )
-
-    except Exception as e:
-        # This is a catch all exception, edit this part to fit your needs.
-        print("Something Happened: ", e)
-        return e
-
-    return "{}{}".format(application.config["S3_LOCATION"], upload_path)
-
-
-def validate_upload(request):
-    if "user_file" not in request.files:
-        raise Exception("No user_file key in request.files")
-
-    file = request.files["user_file"]
-
-    if file.filename == "":
-        raise Exception("No file supplied")
-
-    if not allowed_file(file):
-        raise Exception("Invalid file type")
-
-    # if file.content_length == 0:
-    #     raise Exception("Empty file")
-
-
-def random_file_name(extension):
-    return str(uuid.uuid4().int) + extension.lower()
-
-
-def create_uuid():
-    return uuid.uuid4()
-
-
-def upload_object(filtered_image, original_file, folder="filtered"):
-    filtered_image.seek(0)  # Without this line it fails
-    newfile_name = random_file_name(os.path.splitext(original_file.filename)[1])
-    new_url = upload_fileobj_to_s3(
-        filtered_image,
-        newfile_name,
-        original_file.mimetype,
-        application.config["S3_BUCKET"],
-        folder
-    )
-
-    return new_url
-
-
-def upload_original(uploaded_file):
-    new_filename = random_file_name(os.path.splitext(uploaded_file.filename)[1])
-    upload_url = upload_fileobj_to_s3(
-        uploaded_file,
-        new_filename,
-        uploaded_file.mimetype,
-        application.config["S3_BUCKET"],
-        "uploads"
-    )
-
-    return upload_url
-
-
-def filter_image(upload_url):
-    response = requests.get(upload_url, stream=True)
-    response.raw.decode_content = True
-    plain_image = Image.open(response.raw)
-
-    return filter_black_and_white(plain_image, response.headers['Content-Type'])
-
-
-def dominant_colour(dominant_colours, height=100, width=100):
-    # response = requests.get(upload_url, stream=True)
-    # response.raw.decode_content = True
-    # plain_image = Image.open(response.raw)
-
-    # open_cv_image = numpy.array(plain_image)
-
-    blank_image = numpy.zeros((height, width, 3), numpy.uint8)
-
-    colour = dominant_colours['colors'][0]['color']
-    blank_image[:, :] = (colour['blue'], colour['green'], colour['red'])
-
-    # # Convert RGB to BGR
-    # open_cv_image = open_cv_image[:, :, ::-1].copy()
-    # open_cv_image = cv.rectangle(open_cv_image, (250, 30), (450, 200), (0, 255, 0), 5)
-    new_plain = Image.fromarray(blank_image)
-
-    return get_img_object(new_plain, 'image/jpeg')
-
-
-def filter_black_and_white(plain_image, mime_type):
-    filtered = ImageEnhance.Color(plain_image).enhance(0.0)
-
-    return get_img_object(filtered, mime_type)
-
-
-def get_img_object(image, mime_type):
-    file_obj = BytesIO()
-
-    image.save(file_obj, mime_type.split('/')[1])
-
-    return file_obj
+application.config.from_object("app.config.config")
 
 
 def format_response(response):
@@ -148,89 +29,185 @@ def format_response(response):
     return response
 
 
-def google_vision_api(image_url):
-    img_request = {
-        "requests": [
-            {
-                "image": {
-                    "source": {"imageUri": image_url}
-                },
-                "features": [
-                    {"type": "IMAGE_PROPERTIES", "maxResults": 1}
-                ]
-            }
-        ]
-    }
-
-    return requests.post(url=application.config["VISION_API"], json=img_request).json()
-
-
 @application.route('/')
 def hello_world():
     return render_template('helloworld.html', text='Welcome to api.inflex.co')
 
 
-@application.route('/upload', methods=["POST"])
-def upload():
+@application.route('/users/<string:user_id>/images', methods=["GET"])
+def get_history(user_id):
     request_uid = create_uuid()
+
+    if not db.user_exists(user_id):
+        return jsonify(_uuid=request_uid, error="Invalid user"), status.HTTP_404_NOT_FOUND
+
+    all = db.get_all_by_user(user_id)
+
+    posts = []
+
+    for post in all:
+        post['_id'] = str(post['_id'])
+        posts.append(post)
+
+    return jsonify(posts)
+
+
+@application.route('/users/<string:user_id>/images', methods=["POST"])
+def upload(user_id):
+    request_uid = create_uuid()
+    print(str(request_uid))
+
+    if not db.user_exists(user_id):
+        return jsonify(_uuid=request_uid, error="Invalid user"), status.HTTP_404_NOT_FOUND
 
     try:
         validate_upload(request)
     except Exception:
         return jsonify(_uuid=request_uid, error="Invalid file"), status.HTTP_400_BAD_REQUEST
 
-    original_file = request.files["user_file"]
+    original_uploaded_url = upload_original(request.files["user_file"])
 
-    original_uploaded_url = upload_original(original_file)
+    imid = create_uuid().hex[:5]
 
-    api_response = google_vision_api(original_uploaded_url)['responses'][0]
+    do_filter(imid, original_uploaded_url, request_uid, user_id)
 
-    dominant_colour_image = dominant_colour(api_response['imagePropertiesAnnotation']['dominantColors'])
-    dominant_colour_url = upload_object(dominant_colour_image, original_file, "sample/colour")
-    dominant_colour_val = get_dominant_colour(api_response)
+    return jsonify(im_url="http://localhost:8080/users/" + user_id + "/images/" + imid)
 
-    filtered_image = filter_image(original_uploaded_url)
-    filtered_uploaded_url = upload_object(filtered_image, original_file)
 
+def do_filter(imid, original_uploaded_url, request_uid, user_id):
+    # api_response = google_vision_api(original_uploaded_url, application.config["VISION_API"])
+    # dom_colour, dom_score = get_dominant_colour(api_response)
+    image = Filterable.from_url(original_uploaded_url)
+    vibrant, dominant = analyze(image)
+    filtered_images = filter_all(image)
     response = {
-        '_uuid': str(request_uid),
-        'timestamp': datetime.datetime.now().timestamp(),
         'original_url': original_uploaded_url,
-        'filtered': [
-            {
-                'black_and_white': {
-                    'url': filtered_uploaded_url
-                }
-            }
-        ],
-        'dominant_colour': {
-            'value': {
-                'red': dominant_colour_val['red'],
-                'green': dominant_colour_val['green'],
-                'blue': dominant_colour_val['blue']
-            },
-            'sample_url': dominant_colour_url
-        }
-        # 'properties': api_response
+        'filtered': {
+            'recommended': get_recommendation(),
+            'all': filtered_images
+        },
+        'properties': {
+            'vibrant_colour': vibrant,
+            'dominant_colours': dominant
+        },
+        'user_id': user_id,
+        'timestamp': datetime.datetime.now().timestamp(),
+        '_uuid': str(request_uid),
+        'imid': imid
     }
 
-    db.insert(response)
-
-    return jsonify(format_response(response))
+    tasks.insert.delay(response)
 
 
-def get_dominant_colour(api_response):
-    # dominant_colour_val = [0]['color']
-    # test = api_response['imagePropertiesAnnotation']['dominantColors']['colors']
-    #
-    # print(test)
-    #
-    # sorted_test = sorted(test, key=lambda x: test[x]['score'])
-    # print(sorted_test)
-    #
-    # return sorted_test[len(sorted_test)]
+def filter_all(image):
+    filters = BaseFilter.__subclasses__()
+    filtered_images = []
 
-    return api_response['imagePropertiesAnnotation']['dominantColors']['colors'][0]['color']
+    for current_filter in filters:
+        filtered_image = current_filter.apply(image)
+        filtered_images.append({
+            'id': current_filter.id(),
+            'name': current_filter.name(),
+            'thumb_url': upload_object(filtered_image.square_thumb_bytes()),
+            'preview_url': upload_object(filtered_image.preview_bytes())
+        })
+
+    return filtered_images
+
+
+@application.route('/users/<string:user_id>/images/<string:image_id>', methods=["GET"])
+def get_image(user_id, image_id):
+    request_uid = create_uuid()
+
+    if not db.user_exists(user_id) \
+            or not db.image_exists(user_id, image_id):
+        return jsonify(_uuid=request_uid, error="Invalid"), status.HTTP_404_NOT_FOUND
+
+    imgs = get_img_from_db(user_id, image_id)
+
+    return jsonify(user_response(imgs))
+
+
+def get_img_from_db(user_id, image_id):
+    db_image = db.get_image(user_id, image_id)
+    images = []
+    for image in db_image:
+        image['_id'] = str(image['_id'])
+        images.append(image)
+
+    return images
+
+
+@application.route('/users/<string:user_id>/images/<string:image_id>/<string:filter_id>')
+def get_image_filter(user_id, image_id, filter_id):
+    request_uid = create_uuid()
+
+    if not db.user_exists(user_id) \
+            or not db.image_exists(user_id, image_id):
+        return jsonify(_uuid=request_uid, error="Invalid"), status.HTTP_404_NOT_FOUND
+
+    imgs = get_img_from_db(user_id, image_id)
+
+    for filt in imgs[0]['filtered']['all']:
+        if filt['id'] == filter_id:
+            return filt
+
+    return jsonify(_uuid=request_uid, error="Invalid filter"), status.HTTP_404_NOT_FOUND
+
+
+@application.route('/users/<string:user_id>/images/<string:image_id>_<string:filter_id>_<string:size>.jpg')
+def get_image_filter_full(user_id, image_id, filter_id, size):
+    request_uid = create_uuid()
+
+    if not db.user_exists(user_id) \
+            or not db.image_exists(user_id, image_id):
+        return jsonify(_uuid=request_uid, error="Invalid"), status.HTTP_404_NOT_FOUND
+
+    img_json = get_img_from_db(user_id, image_id)
+    filter_obj = get_filter(filter_id)
+    if filter_obj is not None and len(img_json) > 0:
+        filtered = do_filter_from_img_json(filter_obj, img_json[0])
+
+        img = get_img_for_response(filtered, size)
+        if img is not None:
+            return image_response(img)
+
+    return jsonify(_uuid=request_uid, error="Invalid filter"), status.HTTP_404_NOT_FOUND
+
+
+def get_img_for_response(filtered, size):
+    if size == "f":
+        return filtered.as_bytes()
+    if size == "p":
+        return filtered.preview_bytes()
+    if size == "t":
+        return filtered.thumb_bytes()
+
+    return None
+
+
+def image_response(image):
+    return Response(image.getvalue(), mimetype='image/jpeg')
+
+
+def do_filter_from_img_json(filter_class, img_json):
+    image = Filterable.from_url(img_json['original_url'])
+    filtered = filter_class.apply(image)
+    return filtered
+
+
+def get_filter(filter_id):
+    filters = BaseFilter.__subclasses__()
+
+    for filter_class in filters:
+        if filter_class.id() == filter_id:
+            return filter_class
+
+    return None
+
+
+def user_response(imgs):
+    return {key: imgs[0][key] for key in ['original_url', 'filtered']}
 
 
 @application.route('/show', methods=["GET"])
@@ -245,12 +222,22 @@ def show_db():
     return jsonify(posts)
 
 
-@application.route('/new_id', methods=["GET"])
+@application.route('/users/', methods=["POST"])
 def user_id():
-    random = uuid.uuid4().hex
+    return jsonify(user_id=db.create_user())
 
-    return jsonify(user_id=random)
+
+# @application.route('/celery/test', methods=['GET'])
+# def celery_test():
+#     return jsonify(task_id=hello.delay().task_id)
+#
+#
+# @application.route('/celery/results/<string:task_id>', methods=['GET'])
+# def celery_test_result(task_id):
+#     from app.tasks import app
+#
+#     return jsonify(task_id=task_id, result=AsyncResult(task_id, app=app).get(timeout=2))
 
 
 if __name__ == '__main__':
-    application.run()
+    application.run(port=8080)

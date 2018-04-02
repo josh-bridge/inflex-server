@@ -10,3 +10,7 @@ Pillow==5.0.0
 requests==2.18.4
 numpy==1.14.0
 opencv_python==3.4.0.12
+scikit-image==0.13.1
+scikit-learn==0.19.1
+celery==4.1.0
+flask-cors==3.0.3
