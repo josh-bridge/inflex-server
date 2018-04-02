@@ -34,31 +34,10 @@ def hello_world():
     return render_template('helloworld.html', text='Welcome to api.inflex.co')
 
 
-@application.route('/users/<string:user_id>/images', methods=["GET"])
-def get_history(user_id):
-    request_uid = create_uuid()
-
-    if not db.user_exists(user_id):
-        return jsonify(_uuid=request_uid, error="Invalid user"), status.HTTP_404_NOT_FOUND
-
-    all = db.get_all_by_user(user_id)
-
-    posts = []
-
-    for post in all:
-        post['_id'] = str(post['_id'])
-        posts.append(post)
-
-    return jsonify(posts)
-
-
-@application.route('/users/<string:user_id>/images', methods=["POST"])
-def upload(user_id):
+@application.route('/images', methods=["POST"])
+def upload():
     request_uid = create_uuid()
     print(str(request_uid))
-
-    if not db.user_exists(user_id):
-        return jsonify(_uuid=request_uid, error="Invalid user"), status.HTTP_404_NOT_FOUND
 
     try:
         validate_upload(request)
@@ -69,12 +48,12 @@ def upload(user_id):
 
     imid = create_uuid().hex[:5]
 
-    do_filter(imid, original_uploaded_url, request_uid, user_id)
+    do_filter(imid, original_uploaded_url, request_uid)
 
-    return jsonify(im_url="http://localhost:8080/users/" + user_id + "/images/" + imid)
+    return jsonify(im_url="http://localhost:8080/images/" + imid), 201, {'location': "/images/" + imid}
 
 
-def do_filter(imid, original_uploaded_url, request_uid, user_id):
+def do_filter(imid, original_uploaded_url, request_uid):
     # api_response = google_vision_api(original_uploaded_url, application.config["VISION_API"])
     # dom_colour, dom_score = get_dominant_colour(api_response)
     image = Filterable.from_url(original_uploaded_url)
@@ -90,7 +69,6 @@ def do_filter(imid, original_uploaded_url, request_uid, user_id):
             'vibrant_colour': vibrant,
             'dominant_colours': dominant
         },
-        'user_id': user_id,
         'timestamp': datetime.datetime.now().timestamp(),
         '_uuid': str(request_uid),
         'imid': imid
@@ -115,21 +93,20 @@ def filter_all(image):
     return filtered_images
 
 
-@application.route('/users/<string:user_id>/images/<string:image_id>', methods=["GET"])
-def get_image(user_id, image_id):
+@application.route('/images/<string:image_id>', methods=["GET"])
+def get_image(image_id):
     request_uid = create_uuid()
 
-    if not db.user_exists(user_id) \
-            or not db.image_exists(user_id, image_id):
+    if not db.image_exists(image_id):
         return jsonify(_uuid=request_uid, error="Invalid"), status.HTTP_404_NOT_FOUND
 
-    imgs = get_img_from_db(user_id, image_id)
+    imgs = get_img_from_db(image_id)
 
     return jsonify(user_response(imgs))
 
 
-def get_img_from_db(user_id, image_id):
-    db_image = db.get_image(user_id, image_id)
+def get_img_from_db(image_id):
+    db_image = db.get_image(image_id)
     images = []
     for image in db_image:
         image['_id'] = str(image['_id'])
@@ -138,50 +115,35 @@ def get_img_from_db(user_id, image_id):
     return images
 
 
-@application.route('/users/<string:user_id>/images/<string:image_id>/<string:filter_id>')
-def get_image_filter(user_id, image_id, filter_id):
+@application.route('/images/<string:image_id>-<string:filter_id>-<string:size>.jpg')
+def get_image_filter_full(image_id, filter_id, size):
     request_uid = create_uuid()
 
-    if not db.user_exists(user_id) \
-            or not db.image_exists(user_id, image_id):
+    if not db.image_exists(image_id):
         return jsonify(_uuid=request_uid, error="Invalid"), status.HTTP_404_NOT_FOUND
 
-    imgs = get_img_from_db(user_id, image_id)
-
-    for filt in imgs[0]['filtered']['all']:
-        if filt['id'] == filter_id:
-            return filt
-
-    return jsonify(_uuid=request_uid, error="Invalid filter"), status.HTTP_404_NOT_FOUND
-
-
-@application.route('/users/<string:user_id>/images/<string:image_id>_<string:filter_id>_<string:size>.jpg')
-def get_image_filter_full(user_id, image_id, filter_id, size):
-    request_uid = create_uuid()
-
-    if not db.user_exists(user_id) \
-            or not db.image_exists(user_id, image_id):
-        return jsonify(_uuid=request_uid, error="Invalid"), status.HTTP_404_NOT_FOUND
-
-    img_json = get_img_from_db(user_id, image_id)
+    img_json = get_img_from_db(image_id)
     filter_obj = get_filter(filter_id)
     if filter_obj is not None and len(img_json) > 0:
-        filtered = do_filter_from_img_json(filter_obj, img_json[0])
+        filter_json = get_filter_json(img_json, filter_id)
 
-        img = get_img_for_response(filtered, size)
-        if img is not None:
-            return image_response(img)
+        if size == "f":
+            filtered = do_filter_from_img_json(filter_obj, img_json[0])
+            return image_response(filtered.as_bytes())
+
+        if size == "p":
+            return image_response(Filterable.from_url(filter_json['preview_url']).as_bytes())
+
+        if size == "t":
+            return image_response(Filterable.from_url(filter_json['thumb_url']).as_bytes())
 
     return jsonify(_uuid=request_uid, error="Invalid filter"), status.HTTP_404_NOT_FOUND
 
 
-def get_img_for_response(filtered, size):
-    if size == "f":
-        return filtered.as_bytes()
-    if size == "p":
-        return filtered.preview_bytes()
-    if size == "t":
-        return filtered.thumb_bytes()
+def get_filter_json(img_json, filter_id):
+    for filter_json in img_json[0]['filtered']['all']:
+        if filter_json['id'] == filter_id:
+            return filter_json
 
     return None
 
@@ -220,11 +182,6 @@ def show_db():
         posts.append(post)
 
     return jsonify(posts)
-
-
-@application.route('/users/', methods=["POST"])
-def user_id():
-    return jsonify(user_id=db.create_user())
 
 
 # @application.route('/celery/test', methods=['GET'])
